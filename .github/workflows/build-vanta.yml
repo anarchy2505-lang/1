@@ -1,161 +1,37 @@
-name: Build VANTA Windows Portable
+name: Cleanup VANTA CI
 
 on:
-  workflow_dispatch:
   push:
     branches: [main]
     paths:
       - '.github/workflows/build-vanta.yml'
-      - 'ci/source.part*'
-  pull_request:
-    branches: [main]
-    paths:
-      - '.github/workflows/build-vanta.yml'
-      - 'ci/source.part*'
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
-  build-and-smoke-test:
-    runs-on: windows-latest
-    timeout-minutes: 45
-
+  cleanup:
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-          architecture: 'x64'
+          fetch-depth: 0
 
-      - name: Reconstruct source archive
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $parts = Get-ChildItem ci/source.part* | Sort-Object Name
-          if ($parts.Count -ne 7) { throw "Expected 7 source parts, got $($parts.Count)" }
-          $base64 = ($parts | ForEach-Object { Get-Content $_.FullName -Raw }) -join ''
-          [IO.File]::WriteAllBytes('source.zip', [Convert]::FromBase64String($base64))
-          Expand-Archive -Path source.zip -DestinationPath src -Force
-          Get-ChildItem src -Recurse | Select-Object FullName, Length
-
-      - name: Install build dependencies
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          python -m pip install --upgrade pip
-          python -m pip install pyinstaller -r src/requirements-v10.txt
-
-      - name: Install portable Chromium
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          New-Item -ItemType Directory -Force payload/browsers | Out-Null
-          $env:PLAYWRIGHT_BROWSERS_PATH = (Resolve-Path payload/browsers).Path
-          python -m playwright install chromium
-
-      - name: Build Windows executables
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          New-Item -ItemType Directory -Force out, build/main, build/worker, build/spec, build/spec-worker | Out-Null
-          Push-Location src
-          python -m PyInstaller --noconfirm --clean --onefile --windowed `
-            --name "VANTA Asset Studio" `
-            --paths . `
-            --distpath ../out `
-            --workpath ../build/main `
-            --specpath ../build/spec `
-            studio/vanta_asset_studio.py
-          python -m PyInstaller --noconfirm --clean --onefile --console `
-            --name "VANTA Worker" `
-            --paths . `
-            --distpath ../out `
-            --workpath ../build/worker `
-            --specpath ../build/spec-worker `
-            --collect-all playwright `
-            --collect-all PIL `
-            --hidden-import tools.product_media_pipeline_v10 `
-            --hidden-import tools.update_library_index_v10 `
-            --hidden-import tools.verify_asset_library_v10 `
-            studio/vanta_asset_worker.py
-          Pop-Location
-          Get-ChildItem out | Select-Object Name, Length
-
-      - name: Assemble smoke-test payload
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          Copy-Item 'out/VANTA Asset Studio.exe' payload/
-          Copy-Item 'out/VANTA Worker.exe' payload/
-          New-Item -ItemType Directory -Force payload/configs, payload/assets/data, payload/logs, payload/reports | Out-Null
-          '{}' | Set-Content payload/configs/studio-categories.json -Encoding utf8
-          '{}' | Set-Content payload/assets/data/catalog-v08.json -Encoding utf8
-          '{"totals":{"catalogItems":0,"localPhotos":0,"presentationGlb":0,"captured3dFiles":0}}' | Set-Content payload/assets/data/library-index-v10.json -Encoding utf8
-          '<!doctype html><html><body>VANTA smoke</body></html>' | Set-Content payload/index.html -Encoding utf8
-          '' | Set-Content payload/app.js -Encoding utf8
-          '' | Set-Content payload/scene3d.js -Encoding utf8
-          '' | Set-Content payload/styles.css -Encoding utf8
-
-      - name: Test after clean extraction
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          Compress-Archive -Path payload/* -DestinationPath VANTA-Windows-Binaries.zip -CompressionLevel Optimal
-          New-Item -ItemType Directory -Force clean | Out-Null
-          Expand-Archive -Path VANTA-Windows-Binaries.zip -DestinationPath clean/VANTA-Windows-Binaries -Force
-          $root = (Resolve-Path clean/VANTA-Windows-Binaries).Path
-
-          $workerOutput = & "$root/VANTA Worker.exe" self-test 2>&1
-          $workerExit = $LASTEXITCODE
-          $workerOutput | Tee-Object -FilePath worker-self-test.txt
-          if ($workerExit -ne 0) { throw "Worker self-test failed with exit code $workerExit" }
-
-          $toolOutput = & "$root/VANTA Worker.exe" run-tool import --category gpu --limit 1 --dry-run 2>&1
-          $toolExit = $LASTEXITCODE
-          $toolOutput | Tee-Object -FilePath worker-tool-test.txt
-          if ($toolExit -ne 0) { throw "Bundled tool test failed with exit code $toolExit" }
-
-          $site = Start-Process -FilePath "$root/VANTA Asset Studio.exe" -ArgumentList '--smoke-site' -Wait -PassThru
-          if ($site.ExitCode -ne 0) { throw "Site smoke-test failed with exit code $($site.ExitCode)" }
-
-          $gui = Start-Process -FilePath "$root/VANTA Asset Studio.exe" -ArgumentList '--smoke-gui' -Wait -PassThru
-          if ($gui.ExitCode -ne 0) { throw "GUI smoke-test failed with exit code $($gui.ExitCode)" }
-
-          @(
-            'VANTA Windows clean-extraction smoke test: PASS'
-            "Timestamp UTC: $([DateTime]::UtcNow.ToString('o'))"
-            "Worker self-test exit: $workerExit"
-            "Bundled tool exit: $toolExit"
-            "Site smoke-test exit: $($site.ExitCode)"
-            "GUI smoke-test exit: $($gui.ExitCode)"
-            "Main EXE SHA256: $((Get-FileHash "$root/VANTA Asset Studio.exe" -Algorithm SHA256).Hash)"
-            "Worker EXE SHA256: $((Get-FileHash "$root/VANTA Worker.exe" -Algorithm SHA256).Hash)"
-          ) | Set-Content smoke-test.txt -Encoding utf8
-          Get-Content smoke-test.txt
-
-      - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: VANTA-Windows-Binaries
-          path: |
-            VANTA-Windows-Binaries.zip
-            smoke-test.txt
-            worker-self-test.txt
-            worker-tool-test.txt
-          retention-days: 7
-          if-no-files-found: error
-
-      - name: Publish temporary release artifact
-        shell: pwsh
+      - name: Remove temporary releases and PR
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $ErrorActionPreference = 'Stop'
-          $tag = "vanta-ci-${{ github.run_id }}"
-          gh release create $tag VANTA-Windows-Binaries.zip smoke-test.txt worker-self-test.txt worker-tool-test.txt `
-            --title 'VANTA Windows portable CI build' `
-            --notes 'Automated PyInstaller build and clean-extraction smoke-test artifact.'
+          gh release list --limit 100 --json tagName --jq '.[].tagName' | while read -r tag; do
+            [ -n "$tag" ] && gh release delete "$tag" --cleanup-tag --yes || true
+          done
+          gh pr close 1 --delete-branch || true
+
+      - name: Restore empty repository
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm -r .github ci README.md
+          git commit -m "Remove temporary VANTA build files"
+          git push origin HEAD:main
