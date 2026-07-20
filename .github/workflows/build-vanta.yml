@@ -7,6 +7,11 @@ on:
     paths:
       - '.github/workflows/build-vanta.yml'
       - 'ci/source.part*'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-vanta.yml'
+      - 'ci/source.part*'
 
 permissions:
   contents: write
@@ -150,10 +155,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
-          gh release view vanta-ci *> $null
-          if ($LASTEXITCODE -eq 0) {
-            gh release delete vanta-ci --cleanup-tag --yes
-          }
-          gh release create vanta-ci VANTA-Windows-Binaries.zip smoke-test.txt worker-self-test.txt worker-tool-test.txt `
+          $tag = "vanta-ci-${{ github.run_id }}"
+          gh release create $tag VANTA-Windows-Binaries.zip smoke-test.txt worker-self-test.txt worker-tool-test.txt `
             --title 'VANTA Windows portable CI build' `
             --notes 'Automated PyInstaller build and clean-extraction smoke-test artifact.'
