@@ -159,3 +159,5 @@ jobs:
           gh release create $tag VANTA-Windows-Binaries.zip smoke-test.txt worker-self-test.txt worker-tool-test.txt `
             --title 'VANTA Windows portable CI build' `
             --notes 'Automated PyInstaller build and clean-extraction smoke-test artifact.'
+
+# monitored PR build
