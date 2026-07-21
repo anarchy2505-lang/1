@@ -41,6 +41,7 @@ jobs:
           path: |
             vanta-build.log
             playwright-install.log
+            v13/registry.parts/
           retention-days: 7
           if-no-files-found: warn
       - name: Upload VANTA patch
