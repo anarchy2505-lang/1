@@ -1,0 +1,210 @@
+name: Build VANTA v1.3 Verified Photo Assets
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [vanta-v13-photo-assets]
+    paths:
+      - 'v13/**'
+      - '.github/workflows/build-vanta-v13-photo-assets.yml'
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  build-photo-assets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Prepare standalone VANTA workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p workspace/tools workspace/assets/data workspace/assets/glb workspace/reports
+          python - <<'PY'
+          import base64, json, pathlib, zlib
+          root = pathlib.Path('workspace')
+          packed = pathlib.Path('v13/verified_links_final.json.zlib.b64').read_text()
+          items = json.loads(zlib.decompress(base64.b64decode(packed)))
+          registry = {
+              'version': '1.3',
+              'purpose': 'Verified names and product-photo sources for VANTA assets',
+              'items': items,
+              'summary': {
+                  'count': len(items),
+                  'renamed': sum(v.get('confirmed_name') and v.get('confirmed_name') != v.get('name') for v in items.values()),
+                  'exact': sum(str(v.get('status','')).startswith('verified-exact') for v in items.values()),
+                  'normalized': sum(v.get('status') == 'verified-normalized' for v in items.values()),
+                  'invalidOriginalNames': sum(v.get('status') == 'invalid-generated-name' for v in items.values()),
+              },
+          }
+          (root/'assets/data/product-reference-registry-v13.json').write_text(json.dumps(registry, ensure_ascii=False, indent=2), encoding='utf-8')
+          name_map = {
+              key: {
+                  'oldName': value.get('name'),
+                  'newName': value.get('confirmed_name') or value.get('name'),
+                  'status': value.get('status'),
+                  'sourceUrl': value.get('url'),
+              }
+              for key, value in items.items()
+          }
+          (root/'assets/data/catalog-name-map-v13.json').write_text(json.dumps(name_map, ensure_ascii=False, indent=2), encoding='utf-8')
+          PY
+          cp v13/scrape_product_photos_v13.py workspace/tools/
+          cp v13/build_photo_assets_standalone_v13.py workspace/tools/
+          sed -i 's/(1800,1800)/(1280,1280)/g; s/quality=92/quality=86/g' workspace/tools/scrape_product_photos_v13.py
+
+      - name: Install scraper and 3D dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install playwright pillow numpy trimesh scipy networkx
+          python -m playwright install --with-deps chromium
+
+      - name: Capture verified product galleries
+        working-directory: workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/scrape_product_photos_v13.py --workers 6 --max-images 3
+
+      - name: Build 341 photo-backed GLB assets
+        working-directory: workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/build_photo_assets_standalone_v13.py
+
+      - name: Validate output
+        working-directory: workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, pathlib, hashlib
+          root = pathlib.Path('.')
+          registry = json.loads((root/'assets/data/product-reference-registry-v13.json').read_text())['items']
+          photos = json.loads((root/'assets/data/photo-source-manifest-v13.json').read_text())
+          upgrade = json.loads((root/'assets/data/asset-upgrade-v13.json').read_text())
+          glbs = list((root/'assets/glb').glob('*/*.glb'))
+          missing = []
+          for key in registry:
+              category, item_id = key.split('/', 1)
+              if not (root/'assets/glb'/category/f'{item_id}.glb').exists():
+                  missing.append(key)
+          if len(registry) != 341 or len(glbs) != 341 or missing:
+              raise SystemExit(f'Invalid output: registry={len(registry)} glb={len(glbs)} missing={missing[:10]}')
+          source_images = sum(len(x.get('images', [])) for x in photos.get('items', {}).values())
+          captured_3d = sum(len(x.get('captured3d', [])) for x in photos.get('items', {}).values())
+          with_images = sum(bool(x.get('images')) for x in photos.get('items', {}).values())
+          total_bytes = sum(p.stat().st_size for p in glbs)
+          report = {
+              'result': 'PASS',
+              'catalogItems': len(registry),
+              'glbFiles': len(glbs),
+              'itemsWithCapturedPhotos': with_images,
+              'capturedPhotoFiles': source_images,
+              'captured3dFiles': captured_3d,
+              'totalGlbBytes': total_bytes,
+              'missing': missing,
+              'note': 'Assets are photo-backed product-specific web twins. They are not manufacturer CAD or photogrammetry unless a separately captured source file is reviewed and approved.',
+          }
+          (root/'reports/QA_VANTA_V13.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
+          (root/'reports/QA_VANTA_V13.txt').write_text('\n'.join(f'{k}: {v}' for k,v in report.items()), encoding='utf-8')
+          print(json.dumps(report, indent=2))
+          PY
+
+      - name: Assemble patch archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          PATCH='VANTA-v1.3-Verified-Photo-Assets'
+          mkdir -p "$PATCH/assets" "$PATCH/reports" "$PATCH/tools"
+          cp -R workspace/assets/glb "$PATCH/assets/"
+          cp -R workspace/assets/reference-photos "$PATCH/assets/"
+          if [ -d workspace/assets/library/captured-3d-v13 ]; then
+            mkdir -p "$PATCH/assets/library"
+            cp -R workspace/assets/library/captured-3d-v13 "$PATCH/assets/library/"
+          fi
+          mkdir -p "$PATCH/assets/data"
+          cp workspace/assets/data/product-reference-registry-v13.json "$PATCH/assets/data/"
+          cp workspace/assets/data/catalog-name-map-v13.json "$PATCH/assets/data/"
+          cp workspace/assets/data/photo-source-manifest-v13.json "$PATCH/assets/data/"
+          cp workspace/assets/data/asset-upgrade-v13.json "$PATCH/assets/data/"
+          cp workspace/reports/QA_VANTA_V13.* "$PATCH/reports/"
+          cp workspace/tools/*.py "$PATCH/tools/"
+          cat > "$PATCH/README.txt" <<'EOF'
+          VANTA v1.3 — Verified Photo Asset Pack
+
+          Содержимое:
+          - 341 отдельных GLB-ассета;
+          - фотографии, полученные со страниц из проверенного реестра;
+          - карта исправления наименований;
+          - метаданные источников;
+          - отдельно сохранённые доступные 3D/CAD-файлы, если страницы их отдавали.
+
+          Важно: автоматически созданные GLB являются товарно-специфичными web-двойниками,
+          использующими фотографии на объёмной геометрии. Это не CAD производителя и не
+          полноценная фотограмметрия. Любой захваченный исходный 3D-файл необходимо отдельно
+          проверить по лицензии, масштабу и совместимости перед публикацией.
+          EOF
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('VANTA-v1.3-Verified-Photo-Assets/INSTALL-PATCH.bat')
+          p.write_text(r'''@echo off
+          setlocal
+          cd /d "%~dp0"
+          set "TARGET=%~dp0.."
+          set "BACKUP=%TARGET%\backup-before-v1.3"
+          if not exist "%TARGET%\VANTA Asset Studio.exe" (
+            echo ERROR: Put this patch folder inside the VANTA portable folder.
+            pause
+            exit /b 1
+          )
+          if not exist "%BACKUP%" mkdir "%BACKUP%"
+          if exist "%TARGET%\assets\glb" xcopy "%TARGET%\assets\glb" "%BACKUP%\assets\glb\" /E /I /Y >nul
+          xcopy "%~dp0assets" "%TARGET%\assets\" /E /I /Y
+          echo SUCCESS: VANTA v1.3 photo assets installed.
+          pause
+          ''', encoding='utf-8')
+          PY
+          zip -0 -r VANTA-v1.3-Verified-Photo-Assets.zip "$PATCH"
+          sha256sum VANTA-v1.3-Verified-Photo-Assets.zip > VANTA-v1.3-Verified-Photo-Assets.zip.sha256
+          du -sh "$PATCH" VANTA-v1.3-Verified-Photo-Assets.zip
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VANTA-v1.3-Verified-Photo-Assets
+          path: |
+            VANTA-v1.3-Verified-Photo-Assets.zip
+            VANTA-v1.3-Verified-Photo-Assets.zip.sha256
+            workspace/reports/QA_VANTA_V13.json
+            workspace/reports/QA_VANTA_V13.txt
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Publish temporary release
+        if: github.event_name != 'pull_request'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="vanta-v13-photo-assets-${GITHUB_RUN_ID}"
+          gh release create "$TAG" VANTA-v1.3-Verified-Photo-Assets.zip VANTA-v1.3-Verified-Photo-Assets.zip.sha256 workspace/reports/QA_VANTA_V13.json workspace/reports/QA_VANTA_V13.txt \
+            --title 'VANTA v1.3 verified photo asset build' \
+            --notes 'Automated verified-gallery capture and 341 photo-backed GLB asset build.'
