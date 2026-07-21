@@ -1,0 +1,1 @@
+Run all ten VANTA asset categories in parallel and publish separate category artifacts.
