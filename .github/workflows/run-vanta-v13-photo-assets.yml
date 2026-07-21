@@ -27,7 +27,7 @@ jobs:
           python -m playwright install --with-deps chromium
       - name: Build all verified photo assets
         shell: bash
-        run: bash v13/run_ci.sh
+        run: bash v13/run_ci_v2.sh
       - name: Upload VANTA patch
         uses: actions/upload-artifact@v4
         with:
