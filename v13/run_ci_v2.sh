@@ -31,12 +31,11 @@ name_map={k:{'oldName':v.get('name'),'newName':v.get('confirmed_name') or v.get(
 (root/'assets/data/catalog-name-map-v13.json').write_text(json.dumps(name_map,ensure_ascii=False,indent=2),encoding='utf-8')
 print(json.dumps(registry['summary'],ensure_ascii=False))
 PY
-cp v13/scrape_product_photos_v13.py workspace/tools/
+cp v13/scrape_product_photos_fast_v13.py workspace/tools/
 cp v13/build_photo_assets_standalone_v13.py workspace/tools/
-sed -i 's/(1800,1800)/(1280,1280)/g; s/quality=92/quality=86/g' workspace/tools/scrape_product_photos_v13.py
 (
   cd workspace
-  python tools/scrape_product_photos_v13.py --workers 6 --max-images 3
+  python tools/scrape_product_photos_fast_v13.py --workers 12 --max-images 3
   python tools/build_photo_assets_standalone_v13.py
   python - <<'PY'
 import json,pathlib
