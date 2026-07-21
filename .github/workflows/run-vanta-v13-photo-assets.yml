@@ -1,0 +1,42 @@
+name: Run VANTA v1.3 Photo Asset Build
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install playwright pillow numpy trimesh scipy networkx
+          python -m playwright install --with-deps chromium
+      - name: Build all verified photo assets
+        shell: bash
+        run: bash v13/run_ci.sh
+      - name: Upload VANTA patch
+        uses: actions/upload-artifact@v4
+        with:
+          name: VANTA-v1.3-Verified-Photo-Assets
+          path: |
+            VANTA-v1.3-Verified-Photo-Assets.zip
+            VANTA-v1.3-Verified-Photo-Assets.zip.sha256
+            workspace/reports/QA_VANTA_V13.json
+            workspace/reports/QA_VANTA_V13.txt
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
