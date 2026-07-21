@@ -1,0 +1,1 @@
+All seven verified registry chunks are present. Run the complete gallery and GLB build.
