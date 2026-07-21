@@ -1,0 +1,1 @@
+Registry chunk 3 was repaired byte-for-byte. Run the complete photo and GLB build.
